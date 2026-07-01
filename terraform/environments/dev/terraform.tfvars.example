@@ -1,4 +1,5 @@
 # Copia este archivo como terraform.tfvars (NO comitear terraform.tfvars)
 allowed_ssh_cidr      = "TU_IP/32"
 pipeline_principal_id = "OBJECT_ID_DEL_SP"
+kv_admin_object_id    = "TU_OBJECT_ID_DE_USUARIO" # admin estable del Key Vault (az ad signed-in-user show --query id -o tsv)
 vm_admin_password     = "P@ssw0rd_Segura_Minimo12Chars!"

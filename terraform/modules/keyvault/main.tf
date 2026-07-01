@@ -32,11 +32,13 @@ resource "azurerm_role_assignment" "kv_secrets_user" {
   principal_id         = var.pipeline_principal_id
 }
 
-# Asignar rol "Key Vault Administrator" al deployer (tú)
+# Asignar rol "Key Vault Administrator" a un principal ESTABLE.
+# Se usa var.kv_admin_object_id para que el admin no dependa de quién ejecuta
+# Terraform (local vs SP del pipeline), evitando el reemplazo del role assignment.
 resource "azurerm_role_assignment" "kv_admin" {
   scope                = azurerm_key_vault.kv.id
   role_definition_name = "Key Vault Administrator"
-  principal_id         = data.azurerm_client_config.current.object_id
+  principal_id         = var.kv_admin_object_id != "" ? var.kv_admin_object_id : data.azurerm_client_config.current.object_id
 }
 
 # Secreto de ejemplo: VM admin password (viene de variable sensible)

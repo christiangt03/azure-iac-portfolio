@@ -123,6 +123,7 @@ jobs:
         run: |
           terraform plan \
             -var="pipeline_principal_id=${{ secrets.PIPELINE_PRINCIPAL_ID }}" \
+            -var="kv_admin_object_id=${{ secrets.KV_ADMIN_OBJECT_ID }}" \
             -var="vm_admin_password=${{ secrets.VM_ADMIN_PASSWORD }}" \
             -var="allowed_ssh_cidr=${{ secrets.ALLOWED_SSH_CIDR }}" \
             -out=tfplan-dev \
@@ -247,6 +248,7 @@ jobs:
         run: |
           terraform plan \
             -var="pipeline_principal_id=${{ secrets.PIPELINE_PRINCIPAL_ID }}" \
+            -var="kv_admin_object_id=${{ secrets.KV_ADMIN_OBJECT_ID }}" \
             -var="vm_admin_password=${{ secrets.VM_ADMIN_PASSWORD_PROD }}" \
             -var="allowed_ssh_cidr=${{ secrets.ALLOWED_SSH_CIDR_PROD }}" \
             -out=tfplan-prod
