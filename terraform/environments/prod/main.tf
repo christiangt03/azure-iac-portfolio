@@ -74,6 +74,7 @@ module "keyvault" {
   location              = local.location
   resource_group_name   = module.networking.resource_group_name
   pipeline_principal_id = var.pipeline_principal_id
+  kv_admin_object_id    = var.kv_admin_object_id
   vm_admin_password     = var.vm_admin_password
   tags                  = local.tags
 }
