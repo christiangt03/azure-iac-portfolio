@@ -1,0 +1,256 @@
+# ==============================================================
+# GitHub Actions Workflow - Terraform CI/CD con OIDC (sin secrets estáticos)
+# Triggers: PR → plan | Push main → apply DEV | Manual → apply PROD
+# ==============================================================
+
+name: "Terraform CI/CD"
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - "terraform/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "terraform/**"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy"
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+      action:
+        description: "Terraform action"
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+permissions:
+  id-token: write       # Necesario para OIDC con Azure
+  contents: read
+  pull-requests: write  # Para comentar el plan en el PR
+
+env:
+  TF_VERSION: "1.7.4"
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  # ARM_CLIENT_SECRET no necesario: usamos OIDC federado
+
+jobs:
+  # ─────────────────────────────────────────────
+  # JOB 1: Validate y format check
+  # ─────────────────────────────────────────────
+  validate:
+    name: "🔍 Validate"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive terraform/
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init (DEV)
+        run: terraform init -backend=false
+        working-directory: terraform/environments/dev
+
+      - name: Terraform Validate (DEV)
+        run: terraform validate
+        working-directory: terraform/environments/dev
+
+  # ─────────────────────────────────────────────
+  # JOB 2: Plan en PRs — resultado como comentario
+  # ─────────────────────────────────────────────
+  plan-dev:
+    name: "📋 Plan DEV"
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/develop'
+    environment: dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init (DEV)
+        run: |
+          terraform init \
+            -backend-config="storage_account_name=${{ secrets.TF_STORAGE_ACCOUNT_DEV }}" \
+            -backend-config="resource_group_name=rg-tfstate" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=dev/terraform.tfstate"
+        working-directory: terraform/environments/dev
+
+      - name: Terraform Plan (DEV)
+        id: plan
+        run: |
+          terraform plan \
+            -var="pipeline_principal_id=${{ secrets.PIPELINE_PRINCIPAL_ID }}" \
+            -var="vm_admin_password=${{ secrets.VM_ADMIN_PASSWORD }}" \
+            -var="allowed_ssh_cidr=${{ secrets.ALLOWED_SSH_CIDR }}" \
+            -out=tfplan-dev \
+            -no-color 2>&1 | tee plan-output.txt
+        working-directory: terraform/environments/dev
+
+      - name: Comment PR with Plan
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('terraform/environments/dev/plan-output.txt', 'utf8');
+            const maxLength = 65000;
+            const truncated = planOutput.length > maxLength
+              ? planOutput.substring(0, maxLength) + '\n... (truncated)'
+              : planOutput;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 📋 Terraform Plan — DEV\n\`\`\`hcl\n${truncated}\n\`\`\``
+            });
+
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-dev
+          path: terraform/environments/dev/tfplan-dev
+          retention-days: 1
+
+  # ─────────────────────────────────────────────
+  # JOB 3: Apply DEV (solo en push a develop)
+  # ─────────────────────────────────────────────
+  apply-dev:
+    name: "🚀 Apply DEV"
+    runs-on: ubuntu-latest
+    needs: plan-dev
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    environment:
+      name: dev
+      url: https://portal.azure.com
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-dev
+          path: terraform/environments/dev/
+
+      - name: Terraform Init (DEV)
+        run: |
+          terraform init \
+            -backend-config="storage_account_name=${{ secrets.TF_STORAGE_ACCOUNT_DEV }}" \
+            -backend-config="resource_group_name=rg-tfstate" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=dev/terraform.tfstate"
+        working-directory: terraform/environments/dev
+
+      - name: Terraform Apply (DEV)
+        run: terraform apply -auto-approve tfplan-dev
+        working-directory: terraform/environments/dev
+
+  # ─────────────────────────────────────────────
+  # JOB 4: Apply PROD (manual dispatch + aprobación del Environment)
+  # ─────────────────────────────────────────────
+  apply-prod:
+    name: "🚀 Apply PROD"
+    runs-on: ubuntu-latest
+    needs: validate
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.environment == 'prod' &&
+      github.event.inputs.action == 'apply' &&
+      github.ref == 'refs/heads/main'
+    environment:
+      name: prod
+      url: https://portal.azure.com
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init (PROD)
+        run: |
+          terraform init \
+            -backend-config="storage_account_name=${{ secrets.TF_STORAGE_ACCOUNT_PROD }}" \
+            -backend-config="resource_group_name=rg-tfstate" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=prod/terraform.tfstate"
+        working-directory: terraform/environments/prod
+
+      - name: Terraform Plan (PROD)
+        run: |
+          terraform plan \
+            -var="pipeline_principal_id=${{ secrets.PIPELINE_PRINCIPAL_ID }}" \
+            -var="vm_admin_password=${{ secrets.VM_ADMIN_PASSWORD_PROD }}" \
+            -var="allowed_ssh_cidr=${{ secrets.ALLOWED_SSH_CIDR_PROD }}" \
+            -out=tfplan-prod
+        working-directory: terraform/environments/prod
+
+      - name: Terraform Apply (PROD)
+        run: terraform apply -auto-approve tfplan-prod
+        working-directory: terraform/environments/prod

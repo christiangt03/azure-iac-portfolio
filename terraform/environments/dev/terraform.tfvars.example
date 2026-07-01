@@ -1,0 +1,4 @@
+# Copia este archivo como terraform.tfvars (NO comitear terraform.tfvars)
+allowed_ssh_cidr      = "TU_IP/32"
+pipeline_principal_id = "OBJECT_ID_DEL_SP"
+vm_admin_password     = "P@ssw0rd_Segura_Minimo12Chars!"

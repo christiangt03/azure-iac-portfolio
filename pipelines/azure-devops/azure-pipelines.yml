@@ -1,0 +1,244 @@
+# ==============================================================
+# Azure DevOps Pipeline - Multi-stage IaC con Terraform
+# Stages: Validate → Plan (DEV) → Apply (DEV) → Plan (PROD) → Apply (PROD)
+# ==============================================================
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - terraform/**
+
+pr:
+  branches:
+    include:
+      - main
+
+variables:
+  - group: terraform-secrets          # Variable Group en Azure DevOps
+  - name: TF_VERSION
+    value: "1.7.4"
+  - name: WORKING_DIR_DEV
+    value: "terraform/environments/dev"
+  - name: WORKING_DIR_PROD
+    value: "terraform/environments/prod"
+
+pool:
+  name: "self-hosted-agents"          # Self-hosted agent (evita límite de paralelismo)
+  # vmImage: "ubuntu-latest"          # Alternativamente: Microsoft-hosted
+
+stages:
+  # ─────────────────────────────────────────────
+  # STAGE 1: Validate - Lint y validación de código
+  # ─────────────────────────────────────────────
+  - stage: Validate
+    displayName: "🔍 Validate Terraform"
+    jobs:
+      - job: TerraformValidate
+        displayName: "Validate & Format Check"
+        steps:
+          - task: TerraformInstaller@1
+            displayName: "Install Terraform $(TF_VERSION)"
+            inputs:
+              terraformVersion: $(TF_VERSION)
+
+          - script: |
+              echo "## Checking Terraform format..."
+              terraform fmt -check -recursive terraform/
+            displayName: "terraform fmt check"
+
+          - task: TerraformTaskV4@4
+            displayName: "terraform init (dev)"
+            inputs:
+              provider: "azurerm"
+              command: "init"
+              workingDirectory: $(WORKING_DIR_DEV)
+              backendServiceArm: $(ARM_SERVICE_CONNECTION)
+              backendAzureRmResourceGroupName: "rg-tfstate"
+              backendAzureRmStorageAccountName: $(TF_STORAGE_ACCOUNT_DEV)
+              backendAzureRmContainerName: "tfstate"
+              backendAzureRmKey: "dev/terraform.tfstate"
+
+          - task: TerraformTaskV4@4
+            displayName: "terraform validate (dev)"
+            inputs:
+              provider: "azurerm"
+              command: "validate"
+              workingDirectory: $(WORKING_DIR_DEV)
+
+  # ─────────────────────────────────────────────
+  # STAGE 2: Plan DEV
+  # ─────────────────────────────────────────────
+  - stage: PlanDev
+    displayName: "📋 Plan DEV"
+    dependsOn: Validate
+    condition: succeeded()
+    jobs:
+      - job: TerraformPlanDev
+        displayName: "Plan DEV Environment"
+        steps:
+          - task: TerraformInstaller@1
+            inputs:
+              terraformVersion: $(TF_VERSION)
+
+          - task: TerraformTaskV4@4
+            displayName: "terraform init (dev)"
+            inputs:
+              provider: "azurerm"
+              command: "init"
+              workingDirectory: $(WORKING_DIR_DEV)
+              backendServiceArm: $(ARM_SERVICE_CONNECTION)
+              backendAzureRmResourceGroupName: "rg-tfstate"
+              backendAzureRmStorageAccountName: $(TF_STORAGE_ACCOUNT_DEV)
+              backendAzureRmContainerName: "tfstate"
+              backendAzureRmKey: "dev/terraform.tfstate"
+
+          - task: TerraformTaskV4@4
+            displayName: "terraform plan (dev)"
+            inputs:
+              provider: "azurerm"
+              command: "plan"
+              workingDirectory: $(WORKING_DIR_DEV)
+              environmentServiceNameAzureRM: $(ARM_SERVICE_CONNECTION)
+              commandOptions: >
+                -var="pipeline_principal_id=$(PIPELINE_PRINCIPAL_ID)"
+                -var="vm_admin_password=$(VM_ADMIN_PASSWORD)"
+                -var="allowed_ssh_cidr=$(ALLOWED_SSH_CIDR)"
+                -out=tfplan-dev
+
+          - publish: $(WORKING_DIR_DEV)/tfplan-dev
+            artifact: tfplan-dev
+            displayName: "Publish DEV plan artifact"
+
+  # ─────────────────────────────────────────────
+  # STAGE 3: Apply DEV (requiere aprobación manual)
+  # ─────────────────────────────────────────────
+  - stage: ApplyDev
+    displayName: "🚀 Apply DEV"
+    dependsOn: PlanDev
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+    jobs:
+      - deployment: TerraformApplyDev
+        displayName: "Apply DEV Environment"
+        environment: "dev"                  # Environment con aprobación configurada en ADO
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: TerraformInstaller@1
+                  inputs:
+                    terraformVersion: $(TF_VERSION)
+
+                - download: current
+                  artifact: tfplan-dev
+
+                - task: TerraformTaskV4@4
+                  displayName: "terraform init (dev)"
+                  inputs:
+                    provider: "azurerm"
+                    command: "init"
+                    workingDirectory: $(WORKING_DIR_DEV)
+                    backendServiceArm: $(ARM_SERVICE_CONNECTION)
+                    backendAzureRmResourceGroupName: "rg-tfstate"
+                    backendAzureRmStorageAccountName: $(TF_STORAGE_ACCOUNT_DEV)
+                    backendAzureRmContainerName: "tfstate"
+                    backendAzureRmKey: "dev/terraform.tfstate"
+
+                - task: TerraformTaskV4@4
+                  displayName: "terraform apply (dev)"
+                  inputs:
+                    provider: "azurerm"
+                    command: "apply"
+                    workingDirectory: $(WORKING_DIR_DEV)
+                    environmentServiceNameAzureRM: $(ARM_SERVICE_CONNECTION)
+                    commandOptions: "$(Pipeline.Workspace)/tfplan-dev/tfplan-dev"
+
+  # ─────────────────────────────────────────────
+  # STAGE 4: Plan PROD
+  # ─────────────────────────────────────────────
+  - stage: PlanProd
+    displayName: "📋 Plan PROD"
+    dependsOn: ApplyDev
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: TerraformPlanProd
+        displayName: "Plan PROD Environment"
+        steps:
+          - task: TerraformInstaller@1
+            inputs:
+              terraformVersion: $(TF_VERSION)
+
+          - task: TerraformTaskV4@4
+            displayName: "terraform init (prod)"
+            inputs:
+              provider: "azurerm"
+              command: "init"
+              workingDirectory: $(WORKING_DIR_PROD)
+              backendServiceArm: $(ARM_SERVICE_CONNECTION)
+              backendAzureRmResourceGroupName: "rg-tfstate"
+              backendAzureRmStorageAccountName: $(TF_STORAGE_ACCOUNT_PROD)
+              backendAzureRmContainerName: "tfstate"
+              backendAzureRmKey: "prod/terraform.tfstate"
+
+          - task: TerraformTaskV4@4
+            displayName: "terraform plan (prod)"
+            inputs:
+              provider: "azurerm"
+              command: "plan"
+              workingDirectory: $(WORKING_DIR_PROD)
+              environmentServiceNameAzureRM: $(ARM_SERVICE_CONNECTION)
+              commandOptions: >
+                -var="pipeline_principal_id=$(PIPELINE_PRINCIPAL_ID)"
+                -var="vm_admin_password=$(VM_ADMIN_PASSWORD_PROD)"
+                -var="allowed_ssh_cidr=$(ALLOWED_SSH_CIDR_PROD)"
+                -out=tfplan-prod
+
+          - publish: $(WORKING_DIR_PROD)/tfplan-prod
+            artifact: tfplan-prod
+            displayName: "Publish PROD plan artifact"
+
+  # ─────────────────────────────────────────────
+  # STAGE 5: Apply PROD (requiere aprobación manual)
+  # ─────────────────────────────────────────────
+  - stage: ApplyProd
+    displayName: "🚀 Apply PROD"
+    dependsOn: PlanProd
+    condition: succeeded()
+    jobs:
+      - deployment: TerraformApplyProd
+        displayName: "Apply PROD Environment"
+        environment: "prod"                 # Environment con aprobación manual obligatoria
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: TerraformInstaller@1
+                  inputs:
+                    terraformVersion: $(TF_VERSION)
+
+                - download: current
+                  artifact: tfplan-prod
+
+                - task: TerraformTaskV4@4
+                  displayName: "terraform init (prod)"
+                  inputs:
+                    provider: "azurerm"
+                    command: "init"
+                    workingDirectory: $(WORKING_DIR_PROD)
+                    backendServiceArm: $(ARM_SERVICE_CONNECTION)
+                    backendAzureRmResourceGroupName: "rg-tfstate"
+                    backendAzureRmStorageAccountName: $(TF_STORAGE_ACCOUNT_PROD)
+                    backendAzureRmContainerName: "tfstate"
+                    backendAzureRmKey: "prod/terraform.tfstate"
+
+                - task: TerraformTaskV4@4
+                  displayName: "terraform apply (prod)"
+                  inputs:
+                    provider: "azurerm"
+                    command: "apply"
+                    workingDirectory: $(WORKING_DIR_PROD)
+                    environmentServiceNameAzureRM: $(ARM_SERVICE_CONNECTION)
+                    commandOptions: "$(Pipeline.Workspace)/tfplan-prod/tfplan-prod"
