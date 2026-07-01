@@ -45,6 +45,7 @@ env:
   ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
   ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
   ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_USE_OIDC: "true" # Terraform (azurerm) usa el token OIDC de GitHub; el az CLI no soporta auth de SP
   # ARM_CLIENT_SECRET no necesario: usamos OIDC federado
 
 jobs:

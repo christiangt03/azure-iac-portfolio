@@ -1,7 +1,7 @@
 # ==============================================================
 # Environment: DEV
 # Llama a todos los módulos con configuración para desarrollo
-# CI smoke test: valida login OIDC + plan DEV en PR (sin cambios de infra)
+# CI smoke test: valida login OIDC + backend + plan DEV en PR (sin cambios de infra)
 # ==============================================================
 
 terraform {
