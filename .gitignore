@@ -1,6 +1,6 @@
 # Terraform
 .terraform/
-.terraform.lock.hcl
+# .terraform.lock.hcl SÍ se commitea (versiones de provider reproducibles en CI)
 *.tfstate
 *.tfstate.backup
 *.tfplan
