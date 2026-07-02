@@ -151,12 +151,6 @@ Push main    → Validate → Plan DEV → Apply DEV → Plan PROD → Apply PRO
 | Azure Key Vault | — | Gestión de secretos |
 | Ubuntu 22.04 LTS | Gen2 | VM OS |
 
-## 📜 Certificaciones relacionadas
-
-- **AZ-104** — Azure Administrator (recursos desplegados: VM, VNet, Storage, RBAC)
-- **AZ-500** — Azure Security (Key Vault, NSG, RBAC, TLS enforcement)
-- **GH-200** — GitHub Actions (OIDC, Environments con aprobación, artifacts)
-
 ---
 
 *Región: `spaincentral` | Autor: [christiangt03](https://github.com/christiangt03)*
